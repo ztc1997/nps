@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -53,10 +54,16 @@ func (s *ClientController) Add() {
 			s.AjaxErr(msg)
 			return
 		}
+		group := strings.TrimSpace(s.getEscapeString("group"))
+		if msg := validateHAGroup(group, false); msg != "" {
+			s.AjaxErr(msg)
+			return
+		}
 		t := &file.Client{
 			VerifyKey: s.getEscapeString("vkey"),
 			Status:    true,
 			Remark:    remark,
+			Group:     group,
 			Cnf: &file.Config{
 				U:        s.getEscapeString("u"),
 				P:        s.getEscapeString("p"),
@@ -101,6 +108,44 @@ func (s *ClientController) GetClient() {
 		s.Data["json"] = data
 		s.ServeJSON()
 	}
+}
+
+// Groups 返回所有已配置的高可用组名（去重排序），供前端下拉使用。
+func (s *ClientController) Groups() {
+	set := make(map[string]bool)
+	file.GetDb().JsonDb.Clients.Range(func(_, value interface{}) bool {
+		c := value.(*file.Client)
+		c.RLock()
+		if c.Group != "" {
+			set[c.Group] = true
+		}
+		c.RUnlock()
+		return true
+	})
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	s.Data["json"] = map[string]interface{}{"code": 1, "data": names}
+	s.ServeJSON()
+}
+
+// groupHasClient 判断指定组是否存在至少一台启用状态的客户端。
+func groupHasClient(group string) bool {
+	found := false
+	file.GetDb().JsonDb.Clients.Range(func(_, value interface{}) bool {
+		c := value.(*file.Client)
+		c.RLock()
+		match := c.Group == group && c.Status
+		c.RUnlock()
+		if match {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // 修改客户端
@@ -156,6 +201,14 @@ func (s *ClientController) Edit() {
 			if s.GetString("flow_export") != "" {
 				c.Flow.ExportFlow = int64(s.GetIntNoErr("flow_export"))
 			}
+			group := strings.TrimSpace(s.getEscapeString("group"))
+			if msg := validateHAGroup(group, false); msg != "" {
+				s.AjaxErr(msg)
+				return
+			}
+			c.Lock()
+			c.Group = group
+			c.Unlock()
 			c.Remark = remark
 			c.Cnf.U = s.getEscapeString("u")
 			c.Cnf.P = s.getEscapeString("p")

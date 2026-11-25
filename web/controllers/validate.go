@@ -1,6 +1,26 @@
 package controllers
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+var haGroupNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+
+// validateHAGroup 校验高可用组名。required 为 true 时组名不能为空。
+func validateHAGroup(name string, required bool) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		if required {
+			return "client group is required"
+		}
+		return ""
+	}
+	if !haGroupNameRE.MatchString(name) {
+		return "client group allows only letters, digits, _ and - (max 32 chars)"
+	}
+	return ""
+}
 
 // validateClientWebPair 校验客户端 Web 登录用户名和密码必须成对设置。
 func validateClientWebPair(webUserName, webPassword string) string {

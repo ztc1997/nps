@@ -332,6 +332,26 @@ func GetTunnel(start, length int, typeVal string, clientId int, search string, s
 				v.Client.IsConnect = false
 			}
 		}
+		if v.ClientGroup != "" {
+			online, total := 0, 0
+			file.GetDb().JsonDb.Clients.Range(func(_, value interface{}) bool {
+				c := value.(*file.Client)
+				c.RLock()
+				match := c.Group == v.ClientGroup && c.Status
+				c.RUnlock()
+				if match {
+					total++
+					if _, ok := Bridge.Client.Load(c.Id); ok {
+						online++
+					}
+				}
+				return true
+			})
+			v.GroupOnline = online
+			v.GroupTotal = total
+		} else {
+			v.GroupOnline, v.GroupTotal = 0, 0
+		}
 		if _, ok := RunList.Load(v.Id); ok {
 			v.RunStatus = true
 		} else {

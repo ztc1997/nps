@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"strings"
+
 	"ehang.io/nps/lib/file"
 	"ehang.io/nps/lib/install"
 	"ehang.io/nps/lib/version"
@@ -152,6 +154,18 @@ func (s *IndexController) Add() {
 			return
 		}
 		t.Client = client
+		if s.getEscapeString("backend_type") == "group" {
+			group := strings.TrimSpace(s.getEscapeString("client_group"))
+			if msg := validateHAGroup(group, true); msg != "" {
+				s.AjaxErr(msg)
+				return
+			}
+			if !groupHasClient(group) {
+				s.AjaxErr("no enabled client in the group")
+				return
+			}
+			t.ClientGroup = group
+		}
 		if client.MaxTunnelNum != 0 && client.GetTunnelNum() >= client.MaxTunnelNum {
 			s.AjaxErr("The number of tunnels exceeds the limit")
 			return
@@ -182,6 +196,7 @@ func (s *IndexController) Copy() {
 
 		newTask := &file.Tunnel{
 			Client:       oldTask.Client,
+			ClientGroup:  oldTask.ClientGroup,
 			Port:         tool.GenerateServerPort(oldTask.Mode),
 			ServerIp:     oldTask.ServerIp,
 			Mode:         oldTask.Mode,
@@ -259,6 +274,20 @@ func (s *IndexController) Edit() {
 				return
 			} else {
 				t.Client = client
+			}
+			if s.getEscapeString("backend_type") == "group" {
+				group := strings.TrimSpace(s.getEscapeString("client_group"))
+				if msg := validateHAGroup(group, true); msg != "" {
+					s.AjaxErr(msg)
+					return
+				}
+				if !groupHasClient(group) {
+					s.AjaxErr("no enabled client in the group")
+					return
+				}
+				t.ClientGroup = group
+			} else {
+				t.ClientGroup = ""
 			}
 			t.Mode = mode
 			if s.GetIntNoErr("port") != t.Port {
