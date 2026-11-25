@@ -276,7 +276,7 @@ func (s *Sock5ModeServer) handleUDP(c net.Conn) {
 	defer reply.Close()
 	// new a tunnel to client
 	link := conn.NewLink("udp5", "", s.task.Client.Cnf.Crypt, s.task.Client.Cnf.Compress, c.RemoteAddr().String(), false, "")
-	target, err := s.bridge.SendLinkInfo(s.task.Client.Id, link, s.task)
+	target, err := s.bridge.SendLinkInfo(s.task.Client.Id, s.task.ClientGroup, link, s.task)
 	if err != nil {
 		logs.Warn("get connection from client id %d  error %s", s.task.Client.Id, err.Error())
 		return

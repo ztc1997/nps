@@ -20,7 +20,8 @@ type Service interface {
 }
 
 type NetBridge interface {
-	SendLinkInfo(clientId int, link *conn.Link, t *file.Tunnel) (target net.Conn, err error)
+	SelectClient(group string) (int, error)
+	SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (target net.Conn, err error)
 }
 
 // BaseServer struct
@@ -125,7 +126,11 @@ func (s *BaseServer) DealClient(c *conn.Conn, client *file.Client, addr string,
 	}
 
 	link := conn.NewLink(tp, addr, client.Cnf.Crypt, client.Cnf.Compress, c.Conn.RemoteAddr().String(), localProxy, protoVersion)
-	if target, err := s.bridge.SendLinkInfo(client.Id, link, s.task); err != nil {
+	group := ""
+	if s.task != nil {
+		group = s.task.ClientGroup
+	}
+	if target, err := s.bridge.SendLinkInfo(client.Id, group, link, s.task); err != nil {
 		logs.Warn("get connection from client id %d  error %s", client.Id, err.Error())
 		c.Close()
 		return err

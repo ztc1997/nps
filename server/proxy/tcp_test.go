@@ -22,8 +22,12 @@ type tunnelTestBridge struct {
 	target net.Conn
 }
 
-func (b *tunnelTestBridge) SendLinkInfo(clientId int, link *conn.Link, t *file.Tunnel) (net.Conn, error) {
+func (b *tunnelTestBridge) SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (net.Conn, error) {
 	return b.target, nil
+}
+
+func (b *tunnelTestBridge) SelectClient(group string) (int, error) {
+	return 0, nil
 }
 
 func TestProcessTunnelForwardsBufferedBytesWhenAuthProbeFails(t *testing.T) {

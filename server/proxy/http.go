@@ -246,7 +246,7 @@ reset:
 	}
 
 	lk = conn.NewLink("http", targetAddr, host.Client.Cnf.Crypt, host.Client.Cnf.Compress, r.RemoteAddr, host.Target.LocalProxy, "")
-	if target, err = s.bridge.SendLinkInfo(host.Client.Id, lk, nil); err != nil {
+	if target, err = s.bridge.SendLinkInfo(host.Client.Id, "", lk, nil); err != nil {
 		logs.Notice("connect to target %s error %s", lk.Host, err)
 		return
 	}

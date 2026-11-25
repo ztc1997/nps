@@ -169,7 +169,7 @@ func (s *UdpModeServer) runSession(addr *net.UDPAddr, key string, sess *udpSessi
 	defer s.task.Client.AddConn()
 
 	link := conn.NewLink(common.CONN_UDP, s.task.Target.TargetStr, s.task.Client.Cnf.Crypt, s.task.Client.Cnf.Compress, addr.String(), s.task.Target.LocalProxy, "")
-	clientConn, err := s.bridge.SendLinkInfo(s.task.Client.Id, link, s.task)
+	clientConn, err := s.bridge.SendLinkInfo(s.task.Client.Id, s.task.ClientGroup, link, s.task)
 	if err != nil {
 		failBuild(err)
 		return

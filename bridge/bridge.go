@@ -429,7 +429,57 @@ func (s *Bridge) register(c *conn.Conn) {
 	}
 }
 
-func (s *Bridge) SendLinkInfo(clientId int, link *conn.Link, t *file.Tunnel) (target net.Conn, err error) {
+// groupRR 是客户端组轮询的起点，保证同一组的连接均匀分布到在线成员。
+var groupRR atomic.Uint64
+
+// SelectClient 从高可用组中挑一台在线客户端，返回其 ID。
+// 不建独立索引而直接遍历 Clients：Web 端改组后立即生效，也无需在
+// typeDeal / DelClient 维护注册与注销钩子。内网客户端数量很少，开销可忽略。
+func (s *Bridge) SelectClient(group string) (int, error) {
+	if group == "" {
+		return 0, errors.New("empty client group")
+	}
+	candidates := make([]*file.Client, 0, 4)
+	file.GetDb().JsonDb.Clients.Range(func(_, value interface{}) bool {
+		c := value.(*file.Client)
+		c.RLock()
+		match := c.Group == group && c.Status
+		c.RUnlock()
+		if match {
+			candidates = append(candidates, c)
+		}
+		return true
+	})
+	if len(candidates) == 0 {
+		return 0, fmt.Errorf("no client in group %q", group)
+	}
+	start := int(groupRR.Add(1)-1) % len(candidates)
+	for i := range candidates {
+		id := candidates[(start+i)%len(candidates)].Id
+		v, ok := s.Client.Load(id)
+		if !ok {
+			continue
+		}
+		cl := v.(*Client)
+		cl.mu.Lock()
+		tunnel, signal := cl.tunnel, cl.signal
+		cl.mu.Unlock()
+		if tunnel == nil || signal == nil || tunnel.IsClose() {
+			continue
+		}
+		return id, nil
+	}
+	return 0, fmt.Errorf("all clients in group %q are offline", group)
+}
+
+func (s *Bridge) SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (target net.Conn, err error) {
+	if group != "" {
+		selected, err := s.SelectClient(group)
+		if err != nil {
+			return nil, err
+		}
+		clientId = selected
+	}
 	//if the proxy type is local
 	if link.LocalProxy {
 		target, err = net.Dial("tcp", link.Host)

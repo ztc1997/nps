@@ -32,7 +32,11 @@ var (
 type p2pBridge struct {
 }
 
-func (p2pBridge *p2pBridge) SendLinkInfo(clientId int, link *conn.Link, t *file.Tunnel) (target net.Conn, err error) {
+func (p2pBridge *p2pBridge) SelectClient(group string) (int, error) {
+	return 0, nil
+}
+
+func (p2pBridge *p2pBridge) SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (target net.Conn, err error) {
 	for i := 0; muxSession == nil; i++ {
 		if i >= 20 {
 			err = errors.New("p2pBridge:too many times to get muxSession")
@@ -173,7 +177,7 @@ func handleP2PVisitor(localTcpConn net.Conn, config *config.CommonConfig, l *con
 	logs.Trace("start trying to connect with the server")
 	//TODO just support compress now because there is not tls file in client packages
 	link := conn.NewLink(common.CONN_TCP, l.Target, false, config.Client.Cnf.Compress, localTcpConn.LocalAddr().String(), false, "")
-	if target, err := p2pNetBridge.SendLinkInfo(0, link, nil); err != nil {
+	if target, err := p2pNetBridge.SendLinkInfo(0, "", link, nil); err != nil {
 		logs.Error(err)
 		udpConnStatus = false
 		return

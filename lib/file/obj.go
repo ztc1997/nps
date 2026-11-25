@@ -38,6 +38,7 @@ type Client struct {
 	Addr            string     // client egress address as seen by server (RemoteAddr)
 	LocalAddr       string     // client private/LAN addresses reported by npc
 	Remark          string     //remark
+	Group           string     // 高可用组名；空 = 普通客户端
 	Status          bool       //is allow connect
 	IsConnect       bool       //is the client connect
 	RateLimit       int        //rate /kb
@@ -149,6 +150,9 @@ type Tunnel struct {
 	Status       bool
 	RunStatus    bool
 	Client       *Client
+	ClientGroup  string `json:"ClientGroup"`           // 非空时按组选路，优先于 Client
+	GroupOnline  int    `json:"GroupOnline,omitempty"` // 运行时展示字段，不参与业务
+	GroupTotal   int    `json:"GroupTotal,omitempty"`
 	Ports        string
 	Flow         *Flow
 	Password     string
