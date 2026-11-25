@@ -3,6 +3,7 @@ package bridge
 import (
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"ehang.io/nps/lib/conn"
@@ -50,7 +51,7 @@ func TestSelectClientSkipsOfflineAndDisabled(t *testing.T) {
 
 	seen := map[int]bool{}
 	for i := 0; i < 8; i++ {
-		id, err := b.SelectClient("office")
+		id, err := b.SelectClient("office", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -69,7 +70,7 @@ func TestSelectClientAllOffline(t *testing.T) {
 	addGroupClient(db, 1, "office", true)
 	addGroupClient(db, 2, "office", true)
 	// Bridge 中没有任何在线连接
-	if _, err := b.SelectClient("office"); err == nil {
+	if _, err := b.SelectClient("office", ""); err == nil {
 		t.Fatal("expected error when all clients are offline")
 	}
 }
@@ -79,7 +80,7 @@ func TestSelectClientMissingGroup(t *testing.T) {
 	addGroupClient(db, 1, "office", true)
 	addOnlineClient(t, b, 1)
 	for _, group := range []string{"", "not-exist"} {
-		if _, err := b.SelectClient(group); err == nil {
+		if _, err := b.SelectClient(group, ""); err == nil {
 			t.Fatalf("expected error for group %q", group)
 		}
 	}
@@ -98,7 +99,7 @@ func TestSelectClientConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			id, err := b.SelectClient("office")
+			id, err := b.SelectClient("office", "")
 			if err != nil {
 				errCh <- err
 				return
@@ -112,6 +113,109 @@ func TestSelectClientConcurrent(t *testing.T) {
 	close(errCh)
 	for err := range errCh {
 		t.Fatal(err)
+	}
+}
+
+// addGroupClientWithLocal 向组中加入一个带上报内网 IP 的客户端记录。
+func addGroupClientWithLocal(db *file.DbUtils, id int, group string, status bool, localAddr string) {
+	db.JsonDb.Clients.Store(id, &file.Client{
+		Id: id, Group: group, Status: status, LocalAddr: localAddr, Cnf: &file.Config{},
+	})
+}
+
+func TestSelectClientTargetIPAffinity(t *testing.T) {
+	b, db := newTestBridge(t)
+	addGroupClientWithLocal(db, 1, "office", true, "192.168.1.11")
+	addGroupClientWithLocal(db, 2, "office", true, "192.168.1.12")
+	addOnlineClient(t, b, 1)
+	addOnlineClient(t, b, 2)
+
+	for _, target := range []string{"192.168.1.12:3389", "192.168.1.12"} {
+		id, err := b.SelectClient("office", target)
+		if err != nil {
+			t.Fatalf("target %s: unexpected error: %v", target, err)
+		}
+		if id != 2 {
+			t.Fatalf("target %s: expected affinity client 2, got %d", target, id)
+		}
+	}
+}
+
+func TestSelectClientTargetIPAffinitySkipsOffline(t *testing.T) {
+	b, db := newTestBridge(t)
+	addGroupClientWithLocal(db, 1, "office", true, "192.168.1.11")
+	addGroupClientWithLocal(db, 2, "office", true, "192.168.1.12") // 目标机不在线
+	addOnlineClient(t, b, 1)
+
+	id, err := b.SelectClient("office", "192.168.1.12:3389")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != 1 {
+		t.Fatalf("expected fallback client 1, got %d", id)
+	}
+}
+
+func TestSelectClientNonIPTargetFallsBackToRR(t *testing.T) {
+	b, db := newTestBridge(t)
+	addGroupClientWithLocal(db, 1, "office", true, "192.168.1.11")
+	addGroupClientWithLocal(db, 2, "office", true, "192.168.1.12")
+	addOnlineClient(t, b, 1)
+	addOnlineClient(t, b, 2)
+
+	seen := map[int]bool{}
+	for i := 0; i < 8; i++ {
+		id, err := b.SelectClient("office", "router.example.com:3389")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if id != 1 && id != 2 {
+			t.Fatalf("unexpected client %d", id)
+		}
+		seen[id] = true
+	}
+	if !seen[1] || !seen[2] {
+		t.Fatalf("expected both online clients to be selected, got %v", seen)
+	}
+}
+
+func TestSelectClientMultiLocalIPAffinity(t *testing.T) {
+	b, db := newTestBridge(t)
+	addGroupClientWithLocal(db, 1, "office", true, "10.0.0.2, 192.168.50.9")
+	addGroupClientWithLocal(db, 2, "office", true, "192.168.1.12")
+	addOnlineClient(t, b, 1)
+	addOnlineClient(t, b, 2)
+
+	id, err := b.SelectClient("office", "192.168.50.9:443")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != 1 {
+		t.Fatalf("expected multi-IP affinity client 1, got %d", id)
+	}
+}
+
+func TestSelectClientRotationUsesStableIDOrder(t *testing.T) {
+	b, db := newTestBridge(t)
+	const group = "rotate-stable"
+	addGroupClient(db, 3, group, true)
+	addGroupClient(db, 1, group, true)
+	addGroupClient(db, 7, group, true)
+	addOnlineClient(t, b, 1)
+	addOnlineClient(t, b, 3)
+	addOnlineClient(t, b, 7)
+
+	// 用独立组并重置计数器，确保序列可预测。
+	groupSequences.Store(group, &atomic.Uint64{})
+	want := []int{1, 3, 7, 1, 3, 7}
+	for i, expected := range want {
+		id, err := b.SelectClient(group, "")
+		if err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+		if id != expected {
+			t.Fatalf("call %d: expected client %d, got %d", i, expected, id)
+		}
 	}
 }
 

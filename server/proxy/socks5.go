@@ -172,7 +172,7 @@ func (s *Sock5ModeServer) doConnect(c net.Conn, command uint8) {
 	}
 	s.DealClient(conn.NewConn(c), s.task.Client, addr, nil, ltype, func() {
 		s.sendReply(c, succeeded)
-	}, s.task.Flow, s.task.Target.LocalProxy, nil, nil)
+	}, s.task.Flow, s.task.Target.LocalProxy, s.task, nil)
 	return
 }
 
@@ -458,14 +458,20 @@ func (s *Sock5ModeServer) Auth(c net.Conn) error {
 // start
 func (s *Sock5ModeServer) Start() error {
 	return conn.NewTcpListenerAndProcess(s.task.ServerIp+":"+strconv.Itoa(s.task.Port), func(c net.Conn) {
-		if err := s.CheckFlowAndConnNum(s.task.Client); err != nil {
-			logs.Warn("client id %d, task id %d, error %s, when socks5 connection", s.task.Client.Id, s.task.Id, err.Error())
-			c.Close()
-			return
+		// 组模式下实际成员由 DealClient 选定，流量/并发限制也放到那里判定。
+		useRepresentative := s.task.ClientGroup == ""
+		if useRepresentative {
+			if err := s.CheckFlowAndConnNum(s.task.Client); err != nil {
+				logs.Warn("client id %d, task id %d, error %s, when socks5 connection", s.task.Client.Id, s.task.Id, err.Error())
+				c.Close()
+				return
+			}
 		}
 		logs.Trace("New socks5 connection,client %d,remote address %s", s.task.Client.Id, c.RemoteAddr())
 		s.handleConn(c)
-		s.task.Client.AddConn()
+		if useRepresentative {
+			s.task.Client.AddConn()
+		}
 	}, &s.listener)
 }
 

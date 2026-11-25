@@ -38,14 +38,20 @@ func NewTunnelModeServer(process process, bridge NetBridge, task *file.Tunnel) *
 // 开始
 func (s *TunnelModeServer) Start() error {
 	return conn.NewTcpListenerAndProcess(s.task.ServerIp+":"+strconv.Itoa(s.task.Port), func(c net.Conn) {
-		if err := s.CheckFlowAndConnNum(s.task.Client); err != nil {
-			logs.Warn("client id %d, task id %d,error %s, when tcp connection", s.task.Client.Id, s.task.Id, err.Error())
-			c.Close()
-			return
+		// 组模式下实际成员由 DealClient 选定，流量/并发限制也放到那里判定。
+		useRepresentative := s.task.ClientGroup == ""
+		if useRepresentative {
+			if err := s.CheckFlowAndConnNum(s.task.Client); err != nil {
+				logs.Warn("client id %d, task id %d,error %s, when tcp connection", s.task.Client.Id, s.task.Id, err.Error())
+				c.Close()
+				return
+			}
 		}
 		logs.Trace("new tcp connection,local port %d,client %d,remote address %s", s.task.Port, s.task.Client.Id, c.RemoteAddr())
 		s.process(conn.NewConn(c), s)
-		s.task.Client.AddConn()
+		if useRepresentative {
+			s.task.Client.AddConn()
+		}
 	}, &s.listener)
 }
 

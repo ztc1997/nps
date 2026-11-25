@@ -20,7 +20,8 @@ type Service interface {
 }
 
 type NetBridge interface {
-	SelectClient(group string) (int, error)
+	SelectClient(group, target string) (int, error)
+	ResolveClient(group, target string) (*file.Client, error)
 	SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (target net.Conn, err error)
 }
 
@@ -114,6 +115,31 @@ func (s *BaseServer) DealClient(c *conn.Conn, client *file.Client, addr string,
 		return nil
 	}
 
+	// 高可用组下，实际转发成员要在建链前确定，后续统计/限流都基于该成员，
+	// 而不是隧道配置里的代表客户端。
+	group := ""
+	if s.task != nil {
+		group = s.task.ClientGroup
+	}
+	if group != "" {
+		selected, err := s.bridge.ResolveClient(group, addr)
+		if err != nil {
+			logs.Warn("select client from group %q for %s error %s", group, addr, err.Error())
+			c.Close()
+			return err
+		}
+		client = selected
+		flow = client.Flow
+		// 选路已在此完成，避免 SendLinkInfo 内部再次选到不同成员。
+		group = ""
+		if err := s.CheckFlowAndConnNum(client); err != nil {
+			logs.Warn("client id %d, task id %d, error %s, when group connection", client.Id, taskId(task), err.Error())
+			c.Close()
+			return err
+		}
+		defer client.AddConn()
+	}
+
 	// 判断访问地址是否在黑名单内
 	if common.IsBlackIp(c.RemoteAddr().String(), client.VerifyKey, client.BlackIpList) {
 		c.Close()
@@ -126,10 +152,6 @@ func (s *BaseServer) DealClient(c *conn.Conn, client *file.Client, addr string,
 	}
 
 	link := conn.NewLink(tp, addr, client.Cnf.Crypt, client.Cnf.Compress, c.Conn.RemoteAddr().String(), localProxy, protoVersion)
-	group := ""
-	if s.task != nil {
-		group = s.task.ClientGroup
-	}
 	if target, err := s.bridge.SendLinkInfo(client.Id, group, link, s.task); err != nil {
 		logs.Warn("get connection from client id %d  error %s", client.Id, err.Error())
 		c.Close()
@@ -141,6 +163,13 @@ func (s *BaseServer) DealClient(c *conn.Conn, client *file.Client, addr string,
 		conn.CopyWaitGroup(target, c.Conn, link.Crypt, link.Compress, client.Rate, flow, true, rb, task, host)
 	}
 	return nil
+}
+
+func taskId(t *file.Tunnel) int {
+	if t == nil {
+		return 0
+	}
+	return t.Id
 }
 
 // 判断访问地址是否在全局黑名单内

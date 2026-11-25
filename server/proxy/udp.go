@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -34,6 +35,7 @@ const (
 type udpSession struct {
 	target     io.ReadWriteCloser // 用于 Read/Write 的封装层（可能含加密/压缩）
 	rawConn    net.Conn           // 底层 mux conn，用于 SetReadDeadline
+	client     *file.Client       // 实际转发成员，流量统计归属
 	lastActive int64              // 最近活跃时间（unix nano，原子读写）
 	ready      chan struct{}      // 会话就绪后关闭；建立失败时也关闭
 	err        error              // 建立失败时设置；ready 关闭后才允许读
@@ -85,7 +87,8 @@ func (s *UdpModeServer) Start() error {
 			common.BufPoolUdp.Put(buf)
 			continue
 		}
-		if common.IsBlackIp(addr.String(), s.task.Client.VerifyKey, s.task.Client.BlackIpList) {
+		// 组模式下客户端黑名单要在选出实际成员后判断，见 runSession。
+		if s.task.ClientGroup == "" && common.IsBlackIp(addr.String(), s.task.Client.VerifyKey, s.task.Client.BlackIpList) {
 			common.BufPoolUdp.Put(buf)
 			continue
 		}
@@ -143,7 +146,9 @@ func (s *UdpModeServer) dispatch(key string, sess *udpSession, data []byte, n in
 		return
 	}
 	sess.touch()
-	s.task.Client.Flow.Add(int64(n), int64(n))
+	if sess.client != nil {
+		sess.client.Flow.Add(int64(n), int64(n))
+	}
 	s.task.Flow.Add(int64(n), int64(n))
 }
 
@@ -160,22 +165,39 @@ func (s *UdpModeServer) runSession(addr *net.UDPAddr, key string, sess *udpSessi
 		common.BufPoolUdp.Put(buf)
 	}
 
-	if err := s.CheckFlowAndConnNum(s.task.Client); err != nil {
-		logs.Warn("client id %d, task id %d,error %s, when udp connection", s.task.Client.Id, s.task.Id, err.Error())
+	client := s.task.Client
+	if group := s.task.ClientGroup; group != "" {
+		selected, err := s.bridge.ResolveClient(group, s.task.Target.TargetStr)
+		if err != nil {
+			logs.Warn("select client from group %q for %s error %s", group, s.task.Target.TargetStr, err.Error())
+			failBuild(err)
+			return
+		}
+		client = selected
+		if common.IsBlackIp(addr.String(), client.VerifyKey, client.BlackIpList) {
+			failBuild(errors.New("blocked by client blacklist"))
+			return
+		}
+	}
+	// close(ready) 之前赋值，等待会话建立的 goroutine 可以安全读取。
+	sess.client = client
+
+	if err := s.CheckFlowAndConnNum(client); err != nil {
+		logs.Warn("client id %d, task id %d,error %s, when udp connection", client.Id, s.task.Id, err.Error())
 		failBuild(err)
 		return
 	}
 	// 只有赢家消耗 NowConn 配额，函数返回时释放。
-	defer s.task.Client.AddConn()
+	defer client.AddConn()
 
-	link := conn.NewLink(common.CONN_UDP, s.task.Target.TargetStr, s.task.Client.Cnf.Crypt, s.task.Client.Cnf.Compress, addr.String(), s.task.Target.LocalProxy, "")
-	clientConn, err := s.bridge.SendLinkInfo(s.task.Client.Id, s.task.ClientGroup, link, s.task)
+	link := conn.NewLink(common.CONN_UDP, s.task.Target.TargetStr, client.Cnf.Crypt, client.Cnf.Compress, addr.String(), s.task.Target.LocalProxy, "")
+	clientConn, err := s.bridge.SendLinkInfo(client.Id, "", link, s.task)
 	if err != nil {
 		failBuild(err)
 		return
 	}
 
-	target := conn.GetConn(clientConn, s.task.Client.Cnf.Crypt, s.task.Client.Cnf.Compress, nil, true)
+	target := conn.GetConn(clientConn, client.Cnf.Crypt, client.Cnf.Compress, nil, true)
 	sess.target = target
 	sess.rawConn = clientConn
 	sess.touch()
@@ -183,7 +205,7 @@ func (s *UdpModeServer) runSession(addr *net.UDPAddr, key string, sess *udpSessi
 
 	defer s.removeSession(key, sess)
 
-	logs.Trace("New udp connection,client %d,remote address %s", s.task.Client.Id, addr)
+	logs.Trace("New udp connection,client %d,remote address %s", client.Id, addr)
 
 	if _, err := target.Write(data); err != nil {
 		logs.Warn(err)
@@ -191,7 +213,7 @@ func (s *UdpModeServer) runSession(addr *net.UDPAddr, key string, sess *udpSessi
 		return
 	}
 	common.BufPoolUdp.Put(buf)
-	s.task.Client.Flow.Add(int64(n), int64(n))
+	client.Flow.Add(int64(n), int64(n))
 	s.task.Flow.Add(int64(n), int64(n))
 
 	// 下行读循环
@@ -212,7 +234,7 @@ func (s *UdpModeServer) runSession(addr *net.UDPAddr, key string, sess *udpSessi
 			logs.Warn(err)
 			return
 		}
-		s.task.Client.Flow.Add(int64(rn), int64(rn))
+		client.Flow.Add(int64(rn), int64(rn))
 		s.task.Flow.Add(int64(rn), int64(rn))
 	}
 }

@@ -32,8 +32,12 @@ var (
 type p2pBridge struct {
 }
 
-func (p2pBridge *p2pBridge) SelectClient(group string) (int, error) {
+func (p2pBridge *p2pBridge) SelectClient(group, target string) (int, error) {
 	return 0, nil
+}
+
+func (p2pBridge *p2pBridge) ResolveClient(group, target string) (*file.Client, error) {
+	return nil, nil
 }
 
 func (p2pBridge *p2pBridge) SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (target net.Conn, err error) {

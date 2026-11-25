@@ -46,8 +46,8 @@ type Tunnel struct {
 
 设计要点：
 
-- `Client` 字段**不能删**：`LoadTaskFromJsonFile`（`lib/file/file.go:50`）用 `post.Client.Id` 恢复隧道，`GetTunnel`（`server/server.go:316`）用 `v.Client.Id` 过滤，限流/黑名单也依赖它。
-- 组模式下 `Client` 仍必填：Web 创建隧道时选一个「代表客户端」，仅作为兜底与统计归属；**实际转发目标由 `ClientGroup` 决定**。
+- `Client` 字段**不能删**：`LoadTaskFromJsonFile`（`lib/file/file.go:50`）用 `post.Client.Id` 恢复隧道，`GetTunnel`（`server/server.go:316`）用 `v.Client.Id` 过滤，非组模式的限流/黑名单也依赖它。
+- 组模式下 `Client` 仍必填：Web 创建隧道时选一个「代表客户端」，仅作为持久化/列表过滤的兜底；**实际转发目标由 `ClientGroup` 决定**，流量、限流与并发数也按实际选中的成员统计。
 - `GroupOnline/GroupTotal` 由 `GetTunnel` 每次请求时填充，供列表展示，不参与选路。
 
 ## 4. 选路设计
@@ -57,10 +57,12 @@ type Tunnel struct {
 不建独立组索引，直接遍历 `JsonDb.Clients`。内网电脑数量很少，开销可忽略；好处是 Web 端改组后**立即生效**，无需在 `typeDeal` / `DelClient` 维护注册与注销钩子。
 
 ```go
-var groupRR atomic.Uint64 // 轮询起点
+var groupSequences sync.Map // map[string]*atomic.Uint64，每组独立轮询计数器
 
-// SelectClient 从组中挑一台在线客户端，返回其 ID。
-func (s *Bridge) SelectClient(group string) (int, error) {
+// targetIP 只解析 IP 字面量，不做 DNS。
+// clientHasLocalIP 匹配客户端上报的 LocalAddr（兜底路径下可能是逗号分隔多 IP）。
+// clientUsable 检查 Bridge.Client 中 signal 与 mux tunnel 是否可用。
+func (s *Bridge) SelectClient(group, target string) (int, error) {
     if group == "" {
         return 0, errors.New("empty group")
     }
@@ -78,21 +80,26 @@ func (s *Bridge) SelectClient(group string) (int, error) {
     if len(candidates) == 0 {
         return 0, fmt.Errorf("no client in group %q", group)
     }
-    start := int(groupRR.Add(1)-1) % len(candidates)
+
+    // 按 ID 排序：消除 sync.Map 顺序抖动，也作为亲和并列时的确定性兜底
+    sort.Slice(candidates, func(i, j int) bool { return candidates[i].Id < candidates[j].Id })
+
+    // 1) 目标 IP 亲和：target 的 IP 命中某成员 LocalAddr 时直接选它
+    if ip := targetIP(target); ip != nil {
+        for _, c := range candidates {
+            if clientHasLocalIP(c, ip) && s.clientUsable(c.Id) {
+                return c.Id, nil
+            }
+        }
+    }
+
+    // 2) 未命中则轮询：每组独立计数器
+    start := int(groupSequence(group).Add(1)-1) % len(candidates)
     for i := range candidates {
         id := candidates[(start+i)%len(candidates)].Id
-        v, ok := s.Client.Load(id)
-        if !ok {
-            continue
+        if s.clientUsable(id) {
+            return id, nil
         }
-        cl := v.(*Client)
-        cl.mu.Lock()
-        tunnel, signal := cl.tunnel, cl.signal
-        cl.mu.Unlock()
-        if tunnel == nil || signal == nil || tunnel.IsClose() {
-            continue
-        }
-        return id, nil
     }
     return 0, fmt.Errorf("all clients in group %q are offline", group)
 }
@@ -100,49 +107,41 @@ func (s *Bridge) SelectClient(group string) (int, error) {
 
 并发自查（Go 专家检查清单）：
 
-- `c.RLock()` 保护 `Group`/`Status` 读；Web 写 `Group` 时必须 `c.Lock()`（见 5.1），否则 data race。
+- `c.RLock()` 保护 `Group`/`Status`/`LocalAddr` 读；Web 写这些字段时必须 `c.Lock()`（见 5.1），否则 data race。
 - `cl.mu` 保护 `signal`/`tunnel` 读；锁内不做 IO，`IsClose()` 放到锁外。
-- 无新增 goroutine、无 channel、无 context，不存在泄漏；无资源需要 `Close`。
+- `groupSequence` 用 `sync.Map` + `atomic.Uint64`，每组一个计数器，无锁竞争放大；无新增 goroutine、无 channel、无 context，不存在泄漏。
+- 选择结果用 `logs.Trace` 打印 `group / target / selectedId / reason(affinity|rr)`，需要观察时调高日志级别。
 
-### 4.2 `SendLinkInfo` 改签名
+### 4.2 选路前置与 `SendLinkInfo`
 
-`server/proxy/base.go` 的接口加一个方法、签名加一个参数：
+`server/proxy/base.go` 的 `NetBridge` 在原有 `SelectClient` / `SendLinkInfo` 之外新增 `ResolveClient`，用于返回选中的完整客户端记录：
 
 ```go
 type NetBridge interface {
-    SelectClient(group string) (int, error)
+    SelectClient(group, target string) (int, error)
+    ResolveClient(group, target string) (*file.Client, error)
     SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (net.Conn, error)
 }
 ```
 
-`bridge.SendLinkInfo` 开头插入选路，**后续原有逻辑保持不变**（IP 限制校验、`tunnel.NewConn()`、`SendInfo`）：
+组模式调用方先 `ResolveClient` 得到实际成员，再用该成员的 `Cnf` / `Rate` / `Flow` 建链和记账，最后以 `client.Id` + `group=""` 调用 `SendLinkInfo`。`bridge.SendLinkInfo` 保留 `group != ""` 的兼容选路分支，但正常组模式不会再走它，避免二次选路选到不同成员。
 
-```go
-if group != "" {
-    selected, err := s.SelectClient(group)
-    if err != nil {
-        return nil, err
-    }
-    clientId = selected
-}
-```
+调用点改造清单：
 
-调用点改造清单（每处多传一个 `group` 参数）：
-
-| 文件 | 位置 | group 参数 |
+| 文件 | 位置 | 处理方式 |
 |---|---|---|
-| `server/proxy/base.go` | `DealClient:128` | `s.task.ClientGroup` |
-| `server/proxy/udp.go` | `:172` | `s.task.ClientGroup` |
-| `server/proxy/socks5.go` | `:279` | `s.task.ClientGroup` |
+| `server/proxy/base.go` | `DealClient` | `ResolveClient` 后以 `group=""` 调 `SendLinkInfo`；流量/限流用实际成员 |
+| `server/proxy/udp.go` | `runSession` | 同上，并把实际成员存入 `udpSession` 供后续包记账 |
+| `server/proxy/socks5.go` | `doConnect` | 通过 `DealClient` 走同一套组模式选路与记账 |
 | `server/proxy/http.go` | `:249` | `""`（Host 模式阶段一不支持） |
 | `server/proxy/websocket.go` | `:123`、`:154` | `""` |
-| `client/local.go` | `p2pBridge` 实现 + `:176` | 忽略该参数 |
-| `server/proxy/tcp_test.go` | mock 实现 | 忽略该参数 |
+| `client/local.go` | `p2pBridge` 实现 + `:176` | 忽略组参数 |
+| `server/proxy/tcp_test.go` | mock 实现 | 忽略组参数 |
 
 ### 4.3 运行时时序
 
 1. 各电脑用**各自 vKey** 运行 npc → 服务端 `Bridge.Client` 登记，Web 显示在线。
-2. 外网访问隧道端口 → `SendLinkInfo` → `SelectClient(group)` → 轮询找到第一个在线成员 → 用该 ID 建 mux 子连接 → 下发 link 信息 → 客户端 `handleChan` 连接内网目标。
+2. 外网访问隧道端口 → `ResolveClient(group, target)` → 先做目标 IP 亲和（目标 IP 命中某成员上报的 `LocalAddr` 则直接选它），未命中再按组轮询找在线成员 → 用该成员建 Link、记账并调用 `SendLinkInfo(clientId, "", ...)` 建 mux 子连接 → 下发 link 信息 → 客户端 `handleChan` 连接内网目标。
 3. 某电脑关机 → `ping()`（`bridge/bridge.go:482`）检测到 `tunnel.IsClose()` → `DelClient` 移除 → 下次新连接自动选其他成员。
 4. 全部离线 → 返回明确错误，连接立即关闭；不 panic、不阻塞。
 
@@ -267,15 +266,17 @@ func (s *ClientController) Groups() {
 - `ClientGroup == ""` 完全走原逻辑，老配置/老隧道零影响。
 - `clients.json` / `tasks.json` 新增字段默认空，旧文件可直接加载。
 - 组不存在 / 全离线：返回明确错误，连接关闭；不 panic。
+- 目标 IP 亲和只匹配 IP 字面量（不做 DNS 解析），依据是客户端上报的 `LocalAddr`；老客户端不上报时自动退化为纯轮询。亲和命中但目标机不在线时，回退到轮询选其他在线成员。
 - `t.Client` 不能为 nil（`LoadTaskFromJsonFile` 依赖），所以组隧道仍需选代表客户端。
-- 限流/黑名单：阶段一仍按 `t.Client`（代表客户端）计算，与实际转发成员可能不一致。如需精确，把 `CheckFlowAndConnNum` 从 `TunnelModeServer.Start()`（`server/proxy/tcp.go:41`）挪到 `DealClient` 中，对 `SelectClient` 的结果执行。
+- 限流/黑名单：组模式在 `DealClient` / UDP `runSession` 中先调用 `ResolveClient` 选出实际成员，再按该成员执行流量上限、并发数和黑名单检查；非组模式仍沿用原有代表客户端判定路径。
 - http/https 域名代理（Host 模式）阶段一不支持；阶段二给 `Host` 加 `ClientGroup` 并改 `http.go` / `websocket.go`。
 - **已建立的 TCP 长连接不会迁移**（四层转发通病），切换只影响新连接。
 - 多台电脑共用 vKey 会造成踢线抖动，Web 端应在组提示中明确警告。
 
 ## 9. 测试计划
 
-- `bridge/bridge_test.go`（新增）：表驱动测试，构造 3 个客户端（A/C 在线、B 离线），断言轮询只落在 A/C；全离线返回错误；组名不存在返回错误。
+- `bridge/bridge_test.go`（新增）：表驱动测试，构造 3 个客户端（A/C 在线、B 离线），断言轮询只落在 A/C；全离线返回错误；组名不存在返回错误；目标 IP 命中 `LocalAddr` 走亲和；命中但离线回退轮询；非 IP 目标跳过亲和；多 IP `LocalAddr` 任一命中；按 ID 排序的稳定轮转序列。
+- `server/proxy`：组模式下 TCP/UDP/SOCKS5 流量只累加到实际转发成员，隧道流量正常累加，代表客户端不增长；确认 `SendLinkInfo` 不会二次选路。
 - Web 层：`Groups()` 去重与排序；`Add`/`Edit` 组字段读写与切换清空。
 - `go test -race ./bridge ./server/proxy ./lib/file ./web/...`：重点验证 `Client.Group` 读写无 data race。
 - 手工验收：按第 7 节流程，关掉一台电脑后用**新连接**验证自动切换；确认旧隧道不受影响。
@@ -283,4 +284,4 @@ func (s *ClientController) Groups() {
 ## 10. 分阶段实施
 
 - **阶段一**：第 3~6 节全部改造，覆盖 tcp/udp/socks5，约 10 个文件。
-- **阶段二（可选）**：Host 模式组支持、按实际成员限流、组内成员及当前选中状态的可视化展示。
+- **阶段二（可选）**：Host 模式组支持、组内成员及当前选中状态的可视化展示。

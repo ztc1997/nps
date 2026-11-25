@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -429,15 +430,73 @@ func (s *Bridge) register(c *conn.Conn) {
 	}
 }
 
-// groupRR 是客户端组轮询的起点，保证同一组的连接均匀分布到在线成员。
-var groupRR atomic.Uint64
+// groupSequences 保存每个高可用组独立的轮询计数器，避免不同组之间互相干扰。
+var groupSequences sync.Map // map[string]*atomic.Uint64
+
+func groupSequence(group string) *atomic.Uint64 {
+	v, _ := groupSequences.LoadOrStore(group, &atomic.Uint64{})
+	return v.(*atomic.Uint64)
+}
+
+// targetIP 从目标地址中解析 IP 字面量；不做 DNS 解析。
+// 兼容 "192.168.1.10:3389"、"192.168.1.10"、"[::1]:80" 等形式。
+func targetIP(target string) net.IP {
+	if host, _, err := net.SplitHostPort(target); err == nil {
+		return net.ParseIP(host)
+	}
+	return net.ParseIP(strings.Trim(target, "[]"))
+}
+
+// clientHasLocalIP 判断客户端上报的本机内网 IP 是否包含 target IP。
+// LocalAddr 在兜底路径下可能是逗号分隔的多个 IP。
+func clientHasLocalIP(c *file.Client, ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	c.RLock()
+	localAddr := c.LocalAddr
+	c.RUnlock()
+	if localAddr == "" {
+		return false
+	}
+	for _, item := range strings.Split(localAddr, ",") {
+		if net.ParseIP(strings.TrimSpace(item)).Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientUsable 判断客户端是否具备实际转发能力。
+// Web 上的“在线”只要求 Bridge.Client 中存在登记，这里要求 signal 与 mux tunnel 均可用。
+func (s *Bridge) clientUsable(id int) bool {
+	v, ok := s.Client.Load(id)
+	if !ok {
+		return false
+	}
+	cl := v.(*Client)
+	cl.mu.Lock()
+	tunnel, signal := cl.tunnel, cl.signal
+	cl.mu.Unlock()
+	return tunnel != nil && signal != nil && !tunnel.IsClose()
+}
 
 // SelectClient 从高可用组中挑一台在线客户端，返回其 ID。
-// 不建独立索引而直接遍历 Clients：Web 端改组后立即生效，也无需在
-// typeDeal / DelClient 维护注册与注销钩子。内网客户端数量很少，开销可忽略。
-func (s *Bridge) SelectClient(group string) (int, error) {
+// 保留该签名供现有调用方与测试使用；需要按实际成员记账/限流的调用方应使用 ResolveClient。
+func (s *Bridge) SelectClient(group, target string) (int, error) {
+	client, err := s.ResolveClient(group, target)
+	if err != nil {
+		return 0, err
+	}
+	return client.Id, nil
+}
+
+// ResolveClient 与 SelectClient 使用同一套选路策略，但返回选中的 Client 记录。
+// 组模式下流量统计、限流、并发数以及 Link 参数都应基于实际选中的成员，
+// 而不是隧道配置里的代表客户端。
+func (s *Bridge) ResolveClient(group, target string) (*file.Client, error) {
 	if group == "" {
-		return 0, errors.New("empty client group")
+		return nil, errors.New("empty client group")
 	}
 	candidates := make([]*file.Client, 0, 4)
 	file.GetDb().JsonDb.Clients.Range(func(_, value interface{}) bool {
@@ -451,25 +510,32 @@ func (s *Bridge) SelectClient(group string) (int, error) {
 		return true
 	})
 	if len(candidates) == 0 {
-		return 0, fmt.Errorf("no client in group %q", group)
+		return nil, fmt.Errorf("no client in group %q", group)
 	}
-	start := int(groupRR.Add(1)-1) % len(candidates)
+
+	// 按 ID 排序：消除 sync.Map 遍历顺序不稳定，也作为亲和并列时的确定性兜底。
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Id < candidates[j].Id })
+
+	// 目标 IP 亲和：目标地址就是某成员自身的内网地址时，直接走该机。
+	if ip := targetIP(target); ip != nil {
+		for _, c := range candidates {
+			if clientHasLocalIP(c, ip) && s.clientUsable(c.Id) {
+				logs.Trace("client group %q target %s affinity -> client %d", group, target, c.Id)
+				return c, nil
+			}
+		}
+	}
+
+	// 未命中亲和则轮询：每组独立计数器。
+	start := int(groupSequence(group).Add(1)-1) % len(candidates)
 	for i := range candidates {
-		id := candidates[(start+i)%len(candidates)].Id
-		v, ok := s.Client.Load(id)
-		if !ok {
-			continue
+		c := candidates[(start+i)%len(candidates)]
+		if s.clientUsable(c.Id) {
+			logs.Trace("client group %q target %s rr -> client %d", group, target, c.Id)
+			return c, nil
 		}
-		cl := v.(*Client)
-		cl.mu.Lock()
-		tunnel, signal := cl.tunnel, cl.signal
-		cl.mu.Unlock()
-		if tunnel == nil || signal == nil || tunnel.IsClose() {
-			continue
-		}
-		return id, nil
 	}
-	return 0, fmt.Errorf("all clients in group %q are offline", group)
+	return nil, fmt.Errorf("all clients in group %q are offline", group)
 }
 
 func (s *Bridge) SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (target net.Conn, err error) {
@@ -480,7 +546,7 @@ func (s *Bridge) SendLinkInfo(clientId int, group string, link *conn.Link, t *fi
 	}
 	// 本地直连不走客户端，无需选组；放在直连判断之后以保持原有行为。
 	if group != "" {
-		selected, err := s.SelectClient(group)
+		selected, err := s.SelectClient(group, link.Host)
 		if err != nil {
 			return nil, err
 		}

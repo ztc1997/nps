@@ -19,15 +19,24 @@ import (
 )
 
 type tunnelTestBridge struct {
-	target net.Conn
+	target       net.Conn
+	selected     *file.Client
+	linkGroup    string
+	linkClientId int
 }
 
 func (b *tunnelTestBridge) SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (net.Conn, error) {
+	b.linkGroup = group
+	b.linkClientId = clientId
 	return b.target, nil
 }
 
-func (b *tunnelTestBridge) SelectClient(group string) (int, error) {
+func (b *tunnelTestBridge) SelectClient(group, target string) (int, error) {
 	return 0, nil
+}
+
+func (b *tunnelTestBridge) ResolveClient(group, target string) (*file.Client, error) {
+	return b.selected, nil
 }
 
 func TestProcessTunnelForwardsBufferedBytesWhenAuthProbeFails(t *testing.T) {
@@ -299,5 +308,84 @@ func TestProcessHttpPlainGetWithProxyAuth(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("ProcessHttp did not exit")
+	}
+}
+
+func TestProcessTunnelGroupFlowAttributedToSelectedClient(t *testing.T) {
+	setupProxyTestConf(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	targetClient, targetServer := net.Pipe()
+	defer targetClient.Close()
+	defer targetServer.Close()
+
+	representative := file.NewClient("representative", true, true)
+	representative.Id = 1
+	selected := file.NewClient("selected", true, true)
+	selected.Id = 2
+	task := &file.Tunnel{
+		Id:          1,
+		Client:      representative,
+		ClientGroup: "office",
+		Flow:        new(file.Flow),
+		Target:      &file.Target{TargetStr: "127.0.0.1:22"},
+	}
+	bridge := &tunnelTestBridge{target: targetServer, selected: selected}
+	server := NewTunnelModeServer(ProcessTunnel, bridge, task)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ProcessTunnel(conn.NewConn(serverConn), server)
+	}()
+
+	request := []byte("group-request")
+	if _, err := clientConn.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	_ = targetClient.SetReadDeadline(time.Now().Add(time.Second))
+	gotRequest := make([]byte, len(request))
+	if _, err := io.ReadFull(targetClient, gotRequest); err != nil {
+		t.Fatal(err)
+	}
+
+	response := []byte("group-response")
+	if _, err := targetClient.Write(response); err != nil {
+		t.Fatal(err)
+	}
+	_ = clientConn.SetReadDeadline(time.Now().Add(time.Second))
+	gotResponse := make([]byte, len(response))
+	if _, err := io.ReadFull(clientConn, gotResponse); err != nil {
+		t.Fatal(err)
+	}
+
+	clientConn.Close()
+	targetClient.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ProcessTunnel did not exit after connections closed")
+	}
+
+	if bridge.linkGroup != "" {
+		t.Fatalf("expected no second group selection in SendLinkInfo, got group %q", bridge.linkGroup)
+	}
+	if bridge.linkClientId != selected.Id {
+		t.Fatalf("expected link for selected client %d, got %d", selected.Id, bridge.linkClientId)
+	}
+	if got := representative.Flow.InletFlow + representative.Flow.ExportFlow; got != 0 {
+		t.Fatalf("representative client flow changed: %d", got)
+	}
+	want := int64(len(request) + len(response))
+	if selected.Flow.InletFlow != want || selected.Flow.ExportFlow != want {
+		t.Fatalf("selected client flow = in %d/out %d, want %d/%d", selected.Flow.InletFlow, selected.Flow.ExportFlow, want, want)
+	}
+	if task.Flow.InletFlow != want || task.Flow.ExportFlow != want {
+		t.Fatalf("tunnel flow = in %d/out %d, want %d/%d", task.Flow.InletFlow, task.Flow.ExportFlow, want, want)
 	}
 }
