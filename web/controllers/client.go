@@ -233,6 +233,7 @@ func (s *ClientController) Edit() {
 			c.Lock()
 			c.Group = group
 			c.Unlock()
+			file.GetDb().MarkGroupIndexDirty()
 			c.Remark = remark
 			c.Cnf.U = s.getEscapeString("u")
 			c.Cnf.P = s.getEscapeString("p")
@@ -327,8 +328,12 @@ func (s *ClientController) ChangeStatus() {
 		s.AjaxErr("modified fail")
 		return
 	}
-	client.Status = s.GetBoolNoErr("status")
-	if client.Status == false {
+	status := s.GetBoolNoErr("status")
+	client.Lock()
+	client.Status = status
+	client.Unlock()
+	file.GetDb().MarkGroupIndexDirty()
+	if !status {
 		server.DelClientConnect(client.Id)
 	}
 	s.AjaxOk("modified success")

@@ -25,6 +25,7 @@ func newTestBridge(t *testing.T) (*Bridge, *file.DbUtils) {
 // addGroupClient 向组中加入一个客户端记录。
 func addGroupClient(db *file.DbUtils, id int, group string, status bool) {
 	db.JsonDb.Clients.Store(id, &file.Client{Id: id, Group: group, Status: status, Cnf: &file.Config{}})
+	db.MarkGroupIndexDirty()
 }
 
 // addOnlineClient 在 Bridge 中登记一个在线客户端（带有效 mux 和 signal）。
@@ -121,6 +122,7 @@ func addGroupClientWithLocal(db *file.DbUtils, id int, group string, status bool
 	db.JsonDb.Clients.Store(id, &file.Client{
 		Id: id, Group: group, Status: status, LocalAddr: localAddr, Cnf: &file.Config{},
 	})
+	db.MarkGroupIndexDirty()
 }
 
 func TestSelectClientTargetIPAffinity(t *testing.T) {

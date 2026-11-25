@@ -153,7 +153,10 @@ func checkClientExpire() {
 		if !ok || v == nil {
 			return true
 		}
-		if v.ExpireTime == "" || !v.Status {
+		v.RLock()
+		status := v.Status
+		v.RUnlock()
+		if v.ExpireTime == "" || !status {
 			return true
 		}
 		t, err := time.ParseInLocation("2006-01-02 15:04:05", v.ExpireTime, time.Local)
@@ -163,7 +166,10 @@ func checkClientExpire() {
 		if now.Before(t) {
 			return true
 		}
+		v.Lock()
 		v.Status = false
+		v.Unlock()
+		file.GetDb().MarkGroupIndexDirty()
 		changed = true
 		logs.Info("client id %d (remark: %s) expired at %s, auto paused", v.Id, v.Remark, v.ExpireTime)
 		DelClientConnect(v.Id)

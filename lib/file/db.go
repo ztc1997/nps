@@ -16,6 +16,7 @@ import (
 
 type DbUtils struct {
 	JsonDb *JsonDb
+	groups groupIndex
 }
 
 var (
@@ -302,6 +303,7 @@ func (s *DbUtils) DelClient(id int) error {
 		atomic.StoreInt32(&s.JsonDb.ClientIncreaseId, 0)
 	}
 	clientIdLock.Unlock()
+	s.MarkGroupIndexDirty()
 	s.JsonDb.StoreClientsToJsonFile()
 	return nil
 }
@@ -387,6 +389,7 @@ reset:
 	}
 	s.JsonDb.Clients.Store(c.Id, c)
 	clientIdLock.Unlock()
+	s.MarkGroupIndexDirty()
 	s.JsonDb.StoreClientsToJsonFile()
 	return nil
 }
@@ -419,6 +422,7 @@ func (s *DbUtils) VerifyUserName(username string, id int) (res bool) {
 
 func (s *DbUtils) UpdateClient(t *Client) error {
 	s.JsonDb.Clients.Store(t.Id, t)
+	s.MarkGroupIndexDirty()
 	if t.RateLimit == 0 {
 		t.Rate = rate.NewRate(int64((2 << 23) * 1024))
 		t.Rate.Start()

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -498,23 +497,12 @@ func (s *Bridge) ResolveClient(group, target string) (*file.Client, error) {
 	if group == "" {
 		return nil, errors.New("empty client group")
 	}
-	candidates := make([]*file.Client, 0, 4)
-	file.GetDb().JsonDb.Clients.Range(func(_, value interface{}) bool {
-		c := value.(*file.Client)
-		c.RLock()
-		match := c.Group == group && c.Status
-		c.RUnlock()
-		if match {
-			candidates = append(candidates, c)
-		}
-		return true
-	})
+	// 组索引只缓存静态资格（Group/Status），并按 Id 升序排好；
+	// 在线状态仍需下面通过 clientUsable 实时判定。
+	candidates := file.GetDb().GetClientsByGroup(group)
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no client in group %q", group)
 	}
-
-	// 按 ID 排序：消除 sync.Map 遍历顺序不稳定，也作为亲和并列时的确定性兜底。
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Id < candidates[j].Id })
 
 	// 目标 IP 亲和：目标地址就是某成员自身的内网地址时，直接走该机。
 	if ip := targetIP(target); ip != nil {
