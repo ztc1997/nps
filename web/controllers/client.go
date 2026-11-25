@@ -110,24 +110,48 @@ func (s *ClientController) GetClient() {
 	}
 }
 
-// Groups 返回所有已配置的高可用组名（去重排序），供前端下拉使用。
+// haGroupStat 高可用组概览，供前端下拉展示组内客户端数与在线数。
+type haGroupStat struct {
+	Name   string `json:"name"`
+	Total  int    `json:"total"`
+	Online int    `json:"online"`
+}
+
+// Groups 返回所有已配置的高可用组（去重排序），供前端下拉使用。
+// data 保持为字符串数组以兼容现有调用方，stats 提供带在线数的概览。
 func (s *ClientController) Groups() {
-	set := make(map[string]bool)
+	stats := make(map[string]*haGroupStat)
 	file.GetDb().JsonDb.Clients.Range(func(_, value interface{}) bool {
 		c := value.(*file.Client)
 		c.RLock()
-		if c.Group != "" {
-			set[c.Group] = true
-		}
+		group, id, enabled := c.Group, c.Id, c.Status
 		c.RUnlock()
+		if group == "" {
+			return true
+		}
+		st, ok := stats[group]
+		if !ok {
+			st = &haGroupStat{Name: group}
+			stats[group] = st
+		}
+		st.Total++
+		if enabled && server.Bridge != nil {
+			if _, connected := server.Bridge.Client.Load(id); connected {
+				st.Online++
+			}
+		}
 		return true
 	})
-	names := make([]string, 0, len(set))
-	for name := range set {
+	names := make([]string, 0, len(stats))
+	for name := range stats {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	s.Data["json"] = map[string]interface{}{"code": 1, "data": names}
+	detail := make([]haGroupStat, 0, len(names))
+	for _, name := range names {
+		detail = append(detail, *stats[name])
+	}
+	s.Data["json"] = map[string]interface{}{"code": 1, "data": names, "stats": detail}
 	s.ServeJSON()
 }
 
