@@ -6,6 +6,9 @@ nps
 /nps.exe
 /npc.exe
 
+# One-click build output
+/dist/
+
 # Node.js / VuePress
 node_modules/
 yarn.lock
