@@ -473,17 +473,18 @@ func (s *Bridge) SelectClient(group string) (int, error) {
 }
 
 func (s *Bridge) SendLinkInfo(clientId int, group string, link *conn.Link, t *file.Tunnel) (target net.Conn, err error) {
+	//if the proxy type is local
+	if link.LocalProxy {
+		target, err = net.Dial("tcp", link.Host)
+		return
+	}
+	// 本地直连不走客户端，无需选组；放在直连判断之后以保持原有行为。
 	if group != "" {
 		selected, err := s.SelectClient(group)
 		if err != nil {
 			return nil, err
 		}
 		clientId = selected
-	}
-	//if the proxy type is local
-	if link.LocalProxy {
-		target, err = net.Dial("tcp", link.Host)
-		return
 	}
 	if v, ok := s.Client.Load(clientId); ok {
 		//If ip is restricted to do ip verification
