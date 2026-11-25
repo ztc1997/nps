@@ -16,9 +16,14 @@
                     <div class="form-group" id="ha_group">
                         <label class="control-label font-bold" langtag="word-hagroup"></label>
                         <div class="col-sm-10">
-                            <input class="form-control" value="{{.c.Group}}" type="text" name="group" list="ha_group_list"
-                                langtag="info-hagroup">
-                            <datalist id="ha_group_list"></datalist>
+                            <input type="hidden" name="group" id="ha_group_value" value="{{.c.Group}}">
+                            <select class="form-control" id="ha_group_select">
+                                <option value="" langtag="word-hagroup-none"></option>
+                                <option value="__new__" langtag="word-hagroup-new"></option>
+                            </select>
+                            <input class="form-control" type="text" id="ha_group_new" maxlength="32" style="display:none;margin-top:8px;"
+                                placeholder="group name" langtag="info-hagroup-new">
+                            <span class="help-block m-b-none" langtag="info-hagroup-select"></span>
                         </div>
                     </div>
                     {{if eq true .isAdmin}}
@@ -215,19 +220,53 @@
         }
     }
 
+    // 高可用组下拉：已有组直接选，只有建第一个成员时才需要输入新组名。
+    function syncHaGroupInput() {
+        var selected = $('#ha_group_select').val();
+        var creating = selected === '__new__';
+        $('#ha_group_new').toggle(creating);
+        $('#ha_group_value').val(creating ? $.trim($('#ha_group_new').val()) : (selected || ''));
+    }
+
+    function renderHaGroups(data) {
+        var sel = $('#ha_group_select');
+        var current = $('#ha_group_value').val();
+        sel.find('option[data-ha-group]').remove();
+        var stats = (data && data.stats) ? data.stats : [];
+        var names = (data && data.data) ? data.data : [];
+        if (!stats.length && names.length) {
+            for (var i = 0; i < names.length; i++) {
+                stats.push({name: names[i], total: 0, online: 0});
+            }
+        }
+        var anchor = sel.find('option[value="__new__"]');
+        var found = false;
+        for (var j = 0; j < stats.length; j++) {
+            var st = stats[j];
+            $('<option data-ha-group="1"></option>').val(st.name)
+                .text(st.name + ' (' + st.online + '/' + st.total + ')').insertBefore(anchor);
+            if (st.name === current) found = true;
+        }
+        // 兼容历史数据：当前组可能不在返回的组列表中
+        if (current && !found) {
+            $('<option data-ha-group="1"></option>').val(current).text(current + ' (0/0)').insertBefore(anchor);
+        }
+        sel.val(current);
+        if (current && !found) $('#ha_group_new').val(current);
+        syncHaGroupInput();
+    }
+
     $(document).ready(function () {
-        // 加载已有的高可用组名，便于复用
+        $('#ha_group_select').on('change', syncHaGroupInput);
+        $('#ha_group_new').on('input', syncHaGroupInput);
+
+        // 加载已有高可用组及其在线数，供下拉直接选择
         $.ajax({
             type: "POST",
             url: "{{.web_base_url}}/client/groups",
             dataType: "json",
             success: function (data) {
-                var names = (data && data.data) ? data.data : [];
-                var html = '';
-                for (var i = 0; i < names.length; i++) {
-                    html += '<option value="' + names[i] + '"></option>';
-                }
-                $('#ha_group_list').html(html);
+                renderHaGroups(data);
             }
         });
 

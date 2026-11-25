@@ -205,21 +205,36 @@
 
     function getGroupList() {
         var sel = $("select[name='client_group']");
+        var current = '{{.t.ClientGroup}}';
         sel.empty();
         $.ajax({
             type: "POST",
             url: "{{.web_base_url}}/client/groups",
             dataType: "json",
             success: function (data) {
+                var stats = (data && data.stats) ? data.stats : [];
                 var names = (data && data.data) ? data.data : [];
-                if (names.length === 0) {
-                    sel.append('<option value="">-</option>');
-                } else {
+                if (!stats.length && names.length) {
                     for (var i = 0; i < names.length; i++) {
-                        sel.append('<option value="' + names[i] + '">' + names[i] + '</option>');
+                        stats.push({name: names[i], total: 0, online: 0});
                     }
                 }
-                sel.find("option[value='{{.t.ClientGroup}}']").attr("selected", true);
+                if (stats.length === 0) {
+                    sel.append('<option value="">-</option>');
+                } else {
+                    var found = !current;
+                    for (var j = 0; j < stats.length; j++) {
+                        var st = stats[j];
+                        $('<option></option>').val(st.name)
+                            .text(st.name + ' (' + st.online + '/' + st.total + ')').appendTo(sel);
+                        if (st.name === current) found = true;
+                    }
+                    // 组已无成员时仍保留当前值，避免保存时丢失配置
+                    if (!found) {
+                        $('<option></option>').val(current).text(current + ' (0/0)').appendTo(sel);
+                    }
+                }
+                sel.val(current);
             }
         });
     }

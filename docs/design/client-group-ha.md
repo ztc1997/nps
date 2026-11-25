@@ -159,26 +159,42 @@ c.Group = strings.TrimSpace(s.getEscapeString("group"))
 c.Unlock()
 ```
 
-- 新增 `Groups()` 方法，返回去重排序后的组名列表，供前端下拉/datalist 使用：
+- 新增 `Groups()` 方法，返回去重排序后的组名列表（`data` 保持字符串数组以兼容旧调用方），并在 `stats` 中附带每组的客户端总数与在线数，供下拉直接展示：
 
 ```go
 func (s *ClientController) Groups() {
-    set := map[string]bool{}
+    stats := map[string]*haGroupStat{}
     file.GetDb().JsonDb.Clients.Range(func(_, v any) bool {
         c := v.(*file.Client)
         c.RLock()
-        if c.Group != "" {
-            set[c.Group] = true
-        }
+        group, id, enabled := c.Group, c.Id, c.Status
         c.RUnlock()
+        if group == "" {
+            return true
+        }
+        st, ok := stats[group]
+        if !ok {
+            st = &haGroupStat{Name: group}
+            stats[group] = st
+        }
+        st.Total++
+        if enabled && server.Bridge != nil {
+            if _, connected := server.Bridge.Client.Load(id); connected {
+                st.Online++
+            }
+        }
         return true
     })
-    names := make([]string, 0, len(set))
-    for name := range set {
+    names := make([]string, 0, len(stats))
+    for name := range stats {
         names = append(names, name)
     }
     sort.Strings(names)
-    s.Data["json"] = map[string]any{"code": 1, "data": names}
+    detail := make([]haGroupStat, 0, len(names))
+    for _, name := range names {
+        detail = append(detail, *stats[name])
+    }
+    s.Data["json"] = map[string]any{"code": 1, "data": names, "stats": detail}
     s.ServeJSON()
 }
 ```
@@ -205,15 +221,15 @@ func (s *ClientController) Groups() {
 
 | 文件 | 改动 |
 |---|---|
-| `web/views/client/add.html` | 在「备注」后加「高可用组」输入框 `name="group"`，用 datalist 从 `/client/groups` 拉取已有组名；提示「留空为普通客户端」 |
-| `web/views/client/edit.html` | 同上，预填 `{{.c.Group}}` |
+| `web/views/client/add.html` | 在「备注」后加「高可用组」下拉：默认「不加入组」，列出 `/client/groups` 返回的已有组（显示 `组名 (在线/总数)`），末项「＋ 新建组…」仅在建第一个成员时展开输入框。最终值写入隐藏字段 `name="group"` 供表单序列化 |
+| `web/views/client/edit.html` | 同上，下拉预选当前组；当前组已无成员时也动态补回选项，避免保存时丢失配置 |
 | `web/views/client/list.html` | 新增「组」列 `field:'Group'`；`detailFormatter` 显示组名（可选按组筛选） |
 
 ### 6.2 隧道页
 
 | 文件 | 改动 |
 |---|---|
-| `web/views/index/add.html` | 在「客户端 ID」上方加「后端类型」单选（单客户端 / 客户端组）。选组时隐藏 `#client_id`、显示 `#client_group`（select，数据来自 `/client/groups`）。同步修改 `arr[o]` 映射：把 `client_id` 换成 `client_id_or_group`，在 `resetForm()` 中按后端类型切换可见性 |
+| `web/views/index/add.html` | 在「客户端 ID」上方加「后端类型」单选（单客户端 / 客户端组）。选组时隐藏 `#client_id`、显示 `#client_group`（select，数据来自 `/client/groups`，同样显示 `组名 (在线/总数)`）。同步修改 `arr[o]` 映射：把 `client_id` 换成 `client_id_or_group`，在 `resetForm()` 中按后端类型切换可见性 |
 | `web/views/index/edit.html` | 同上；`backend_type` 由 `{{.t.ClientGroup}}` 是否为空推导，组下拉预选原值 |
 | `web/views/index/list.html` | 新增「后端」列：单客户端显示 `ID-备注`，组模式显示 `组名 (在线 x/y)`，数据取 `row.GroupOnline` / `row.GroupTotal` |
 

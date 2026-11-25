@@ -210,12 +210,20 @@
             url: "{{.web_base_url}}/client/groups",
             dataType: "json",
             success: function (data) {
+                var stats = (data && data.stats) ? data.stats : [];
                 var names = (data && data.data) ? data.data : [];
-                if (names.length === 0) {
+                if (!stats.length && names.length) {
+                    for (var i = 0; i < names.length; i++) {
+                        stats.push({name: names[i], total: 0, online: 0});
+                    }
+                }
+                if (stats.length === 0) {
                     sel.append('<option value="">-</option>');
                 } else {
-                    for (var i = 0; i < names.length; i++) {
-                        sel.append('<option value="' + names[i] + '">' + names[i] + '</option>');
+                    for (var j = 0; j < stats.length; j++) {
+                        var st = stats[j];
+                        $('<option></option>').val(st.name)
+                            .text(st.name + ' (' + st.online + '/' + st.total + ')').appendTo(sel);
                     }
                 }
             }

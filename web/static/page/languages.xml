@@ -169,6 +169,22 @@
 		<zh-CN>高可用组</zh-CN>
 		<en-US>HA group</en-US>
 	</lang>
+	<lang id="word-hagroup-none">
+		<zh-CN>不加入组（普通客户端）</zh-CN>
+		<en-US>No group (normal client)</en-US>
+	</lang>
+	<lang id="word-hagroup-new">
+		<zh-CN>＋ 新建组…</zh-CN>
+		<en-US>+ New group...</en-US>
+	</lang>
+	<lang id="info-hagroup-new">
+		<zh-CN>输入新组名</zh-CN>
+		<en-US>New group name</en-US>
+	</lang>
+	<lang id="info-hagroup-select">
+		<zh-CN>选择已有组即可复用；括号内为在线数/客户端数。</zh-CN>
+		<en-US>Pick an existing group to reuse it; (online/total) is shown in parentheses.</en-US>
+	</lang>
 	<lang id="word-backendtype">
 		<zh-CN>后端类型</zh-CN>
 		<en-US>Backend type</en-US>
@@ -182,8 +198,8 @@
 		<en-US>Client group</en-US>
 	</lang>
 	<lang id="info-hagroup">
-		<zh-CN>多台电脑填相同组名，服务端自动选择在线的一台转发。留空为普通客户端。</zh-CN>
-		<en-US>Use the same group name on multiple PCs; the server picks an online one. Leave empty for a normal client.</en-US>
+		<zh-CN>多台电脑选择同一个组，服务端自动选择在线的一台转发。</zh-CN>
+		<en-US>Pick the same group on multiple PCs; the server forwards to an online one.</en-US>
 	</lang>
 	<lang id="word-grouponline">
 		<zh-CN>组内在线</zh-CN>
