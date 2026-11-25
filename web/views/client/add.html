@@ -11,6 +11,13 @@
                             <input class="form-control" type="text" name="remark" placeholder="" langtag="word-remark">
                         </div>
                     </div>
+                    <div class="form-group" id="ha_group">
+                        <label class="control-label font-bold" langtag="word-hagroup"></label>
+                        <div class="col-sm-10">
+                            <input class="form-control" type="text" name="group" list="ha_group_list" langtag="info-hagroup">
+                            <datalist id="ha_group_list"></datalist>
+                        </div>
+                    </div>
                 {{if eq true .allow_flow_limit}}
                     <div class="form-group" id="flow_limit">
                         <label class="control-label font-bold" langtag="word-flowlimit"></label>
@@ -168,6 +175,21 @@
 
 <script>
 $(document).ready(function() {
+    // 加载已有的高可用组名，便于复用
+    $.ajax({
+        type: "POST",
+        url: "{{.web_base_url}}/client/groups",
+        dataType: "json",
+        success: function (data) {
+            var names = (data && data.data) ? data.data : [];
+            var html = '';
+            for (var i = 0; i < names.length; i++) {
+                html += '<option value="' + names[i] + '"></option>';
+            }
+            $('#ha_group_list').html(html);
+        }
+    });
+
     // IP白名单选择change事件
     $('select[name="ipwhite"]').change(function() {
         if ($(this).val() == '1') {

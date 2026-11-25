@@ -32,6 +32,24 @@
                         </div>
                     </div>
 
+                    <div class="form-group">
+                        <label class="control-label font-bold" langtag="word-backendtype"></label>
+                        <div class="col-sm-10">
+                            <select class="form-control" name="backend_type" id="backend_type">
+                                <option value="single" langtag="word-backendsingle"></option>
+                                <option value="group" langtag="word-backendgroup"></option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group" id="client_group">
+                        <label class="control-label font-bold"><span langtag="word-hagroup"></span><span class="text-danger"> *</span></label>
+                        <div class="col-sm-10">
+                            <select class="form-control" name="client_group" id="nps_client_group"></select>
+                            <span class="help-block m-b-none" langtag="info-hagroup"></span>
+                        </div>
+                    </div>
+
                     <div class="form-group" id="client_id">
                         <label class="control-label font-bold"><span langtag="word-clientid"></span><span class="text-danger"> *</span></label>
                         <div class="col-sm-10">
@@ -161,6 +179,10 @@
         for (var i = 0; i < arr[o].length; i++) {
             $("#" + arr[o][i]).css("display", "block")
         }
+        if ($("#backend_type").val() === 'group') {
+            $("#client_id").css("display", "none");
+            $("#client_group").css("display", "block");
+        }
     }
 
     $(function () {
@@ -172,9 +194,33 @@
         $("#use_client").on("change", function () {
             resetForm()
         })
+        $("#backend_type").on("change", function () {
+            resetForm()
+        })
 
         getClientList()
+        getGroupList()
     })
+
+    function getGroupList() {
+        var sel = $("select[name='client_group']");
+        sel.empty();
+        $.ajax({
+            type: "POST",
+            url: "{{.web_base_url}}/client/groups",
+            dataType: "json",
+            success: function (data) {
+                var names = (data && data.data) ? data.data : [];
+                if (names.length === 0) {
+                    sel.append('<option value="">-</option>');
+                } else {
+                    for (var i = 0; i < names.length; i++) {
+                        sel.append('<option value="' + names[i] + '">' + names[i] + '</option>');
+                    }
+                }
+            }
+        });
+    }
 
     function getClientList() {
         $("select[name='client_id']").empty();

@@ -128,11 +128,14 @@
             },
             {
                 field: 'ClientId',//域值
-                title: '<span langtag="word-clientid"></span>',//标题
+                title: '<span langtag="word-backendtype"></span>',//标题
                 halign: 'center',
                 visible: true,//false表示不显示
                 sortable: true, //启用排序
                 formatter: function (value, row, index) {
+                    if (row.ClientGroup) {
+                        return '<span class="badge badge-info">' + row.ClientGroup + ' (' + row.GroupOnline + '/' + row.GroupTotal + ')</span>';
+                    }
                     return row.Client.Id + '-' + row.Client.Remark
                 }
             },
